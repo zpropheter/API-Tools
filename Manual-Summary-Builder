@@ -1,0 +1,116 @@
+#!/bin/bash
+
+####################################################################################################
+# Array Configurations
+
+####################################################################################################
+#API BEARER TOKEN RETRIEVAL
+getBearerToken() {
+	response=$(curl -s -u "$username":"$password" "$url"/api/v1/auth/token -X POST 2>/dev/null)
+	bearerToken=$(echo "$response" | plutil -extract token raw -)
+	tokenExpiration=$(echo "$response" | plutil -extract expires raw - | awk -F . '{print $1}')
+	tokenExpirationEpoch=$(date -j -f "%Y-%m-%dT%T" "$tokenExpiration" +"%s")
+}
+
+####################################################################################################
+#API BEARER TOKEN Expiration check
+
+checkTokenExpiration() {
+	nowEpochUTC=$(date -j -f "%Y-%m-%dT%T" "$(date -u +"%Y-%m-%dT%T")" +"%s")
+	if [[ tokenExpirationEpoch -gt nowEpochUTC ]]
+	then
+		:
+	else
+		(echo "No valid token available, getting new token")
+		getBearerToken
+	fi
+}
+
+#Variable declarations
+bearerToken=""
+tokenExpirationEpoch="0"
+
+####################################################################################################
+# Get Group ID List
+
+getGroupIds() {
+	listOfGroupIds=$(curl -X 'GET' \
+	"$url/JSSResource/computergroups" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Content-type: text/xml" \
+	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
+}
+
+####################################################################################################
+# Get List of Policy IDs
+getPolicyIds() {
+	listOfPolicyIds=$(curl -X 'GET' \
+	"$url/JSSResource/policies" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Content-type: text/xml" \
+	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
+}
+
+####################################################################################################
+####################################################################################################
+####################################################################################################
+
+
+####################################################################################################
+# Set variables to match your environment
+
+url="https://yourserver.jamfcloud.com"
+username="username"
+password="password"
+
+getBearerToken
+
+getGroupIds
+
+for policyID in $listOfGroupIds; do
+	policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/computergroups/id/$policyID" 2>/dev/null)
+	nestedCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/criterion/name/text()' - 2>/dev/null)
+	criteriaSize=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/size/text()' -)
+	if [[ $nestedCheck == *"Computer Group"* ]]; then
+		echo -e "\nThis computer group is nested"
+		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
+		smartGroupCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/is_smart/text()' -)
+		if [[ $smartGroupCheck == true ]]; then 
+			echo -e "-This is a smart group\n"
+		else
+			echo -e "-This is a static group\n"
+		fi
+	elif [[ $criteriaSize -ge 10 ]]; then
+		echo -e "\nThis computer group has 10 or more criteria"
+		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
+	else
+		#remove comments so you can see status as the api tool runs, otherwise leave just the colon to prevent any extra messaging.
+		#		echo "This computer group does not contain nested groups or more than 10 criteria"
+		#		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
+		:
+	fi
+	checkTokenExpiration 
+	sleep 1
+done
+
+getPolicyIds
+
+for policyID in $listOfPolicyIds; do
+	policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/policies/id/$policyID" 2>/dev/null) 
+	policyStatus=$(echo "$policyDetails" | xmllint --xpath '/policy/general/enabled/text()' -)
+	triggerSet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/trigger/text()' -)
+	frequencySet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/frequency/text()' -)
+	inventoryUpdate=$(echo "$policyDetails" | xmllint --xpath '/policy/maintenance/recon/text()' -)
+	if [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate != "true" ]]; then
+		echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -)
+		echo "-This policy is set to recurring checkin, and ongoing frequency!"
+	elif [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate == "true" ]]; then
+		echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -)
+		echo "-This policy is set to recurring checkin, ongoing frequency, and updates inventory!!!"
+	else
+		:
+	fi
+	checkTokenExpiration
+	sleep 1
+done
+

@@ -1,6 +1,18 @@
 #!/bin/bash
 
 ####################################################################################################
+# This tool should be used SPARINGLY and only in circumstances where you can't generate a summary in your jamf pro server by doing the following:
+# 1. Log in to Jamf Pro
+# 2. Click Settings
+# 3. Under "Information" tab click "Jamf Pro summary"
+# 4. Scroll to the bottom and select all
+# 5. Click Create
+# 6. Download
+
+# This tool is very HEAVY on the API because I have not optimized it since it's just a learning project
+# Only run under very specific circumstances
+
+####################################################################################################
 # Array Configurations
 
 ####################################################################################################

@@ -1,0 +1,288 @@
+#!/bin/bash
+
+# You will need to install swift dialog in order to run this script
+# Download it here: https://github.com/swiftDialog/swiftDialog
+
+#This whole project kind of defeats the purpose of using API Command line but I wanted something to build to learn swift dialog. It's definitely not my cleanest work but I'm happy with where it's at.
+#Most of the API calls I utilize are either very commonly used or completely obscure to most admins, that was kind of the point since they tend to be the API calls admins haven't used before
+
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#        * Redistributions of source code must retain the above copyright
+#         notice, this list of conditions and the following disclaimer.
+#      * Redistributions in binary form must reproduce the above copyright
+#           notice, this list of conditions and the following disclaimer in the
+#           documentation and/or other materials provided with the distribution.
+#         * Neither the name of the JAMF Software, LLC nor the
+#           names of its contributors may be used to endorse or promote products
+#           derived from this software without specific prior written permission.
+# THIS SOFTWARE IS PROVIDED BY JAMF SOFTWARE, LLC "AS IS" AND ANY
+# EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL JAMF SOFTWARE, LLC BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+iconpath="/path/to/file"
+return2serviceicon="/path/to/file"
+
+
+####################################################################################################
+# Array Configurations
+
+####################################################################################################
+#API BEARER TOKEN RETRIEVAL
+getBearerToken() {
+	response=$(curl -s -u "$APIUSER":"$APIPASS" "$url"/api/v1/auth/token -X POST)
+	bearerToken=$(echo "$response" | plutil -extract token raw -)
+	tokenExpiration=$(echo "$response" | plutil -extract expires raw - | awk -F . '{print $1}')
+	tokenExpirationEpoch=$(date -j -f "%Y-%m-%dT%T" "$tokenExpiration" +"%s")
+}
+
+####################################################################################################
+#API BEARER TOKEN Expiration check
+
+checkTokenExpiration() {
+	nowEpochUTC=$(date -j -f "%Y-%m-%dT%T" "$(date -u +"%Y-%m-%dT%T")" +"%s")
+	if [[ tokenExpirationEpoch -gt nowEpochUTC ]]
+	then
+		echo "Token valid until the following epoch time: " "$tokenExpirationEpoch"
+	else
+		echo "No valid token available, getting new token"
+		getBearerToken
+	fi
+}
+
+####################################################################################################
+# FIND MANAGEMENT ID FOR MOBILE DEVICE
+
+getManagementId() {
+	mobiledevicerecord=$(curl -X 'GET' \
+	"$url/api/v2/mobile-devices/$deviceid" \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken")
+	managementId=$(/usr/bin/plutil -extract "managementId" raw -o - - <<< "$mobiledevicerecord")
+	echo "Management ID: $managementId"
+}
+
+####################################################################################################
+# FIND MANAGEMENT ID FOR COMPUTER
+
+getComputerManagementId() {
+	computerdevicerecord=$(curl -X 'GET' \
+	"$url/api/v1/computers-inventory-detail/$deviceid" \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken")
+	computermanagementId=$(/usr/bin/plutil -extract "general"."managementId" raw -o - - <<< "$computerdevicerecord")
+	#	echo "Management ID: $computermanagementId"
+}
+
+####################################################################################################
+# REDEPLOY FRAMEWORK 
+
+redeployManagementFramework() {
+	mobiledevicerecord=$(curl -X 'GET' \
+	"$url/api/v1/jamf-management-framework/redeploy/$deviceid" \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken" \
+	-d '')
+}
+
+####################################################################################################
+# RETURN TO SERVICE
+
+returnToService() {
+	returnCommand=$(		curl --request POST \
+		--url "$url"/api/preview/mdm/commands \
+		--header "Authorization: Bearer $bearerToken" \
+		--header 'accept: application/json' \
+		--header 'content-type: application/json' \
+		--data '
+{
+	"clientData": [
+		{
+			"managementId": "'$managementId'"
+		}
+	],
+	"commandData": {
+		"commandType": "ERASE_DEVICE",
+		"returnToService": {
+			"enabled": true,
+			"wifiProfileData": "'$base64pathwifi'"
+		}
+	}
+}
+'
+)
+}
+
+####################################################################################################
+# GET LAPS PASSSWORD
+
+getLAPSPassword() {
+	queryForPassword=$(curl -s -X GET "$url/api/v2/local-admin-password/$computermanagementId/account/$LAPSUsername/password" -H "Authorization: Bearer ${bearerToken}" -H "Content-Type: application/json")
+}
+
+####################################################################################################
+# LAPS DIALOG
+lapsDialog() {
+	dialogOutput=$(/usr/local/bin/dialog --title "LAPS" --icon "$iconpath" --message "Fill out the following information to retrieve the LAPS password for a computer:" --moveable --medium --textfield "Computer ID",required --textfield  "LAPS Username",required )
+		deviceid=$( echo "$dialogOutput" | grep "Computer ID" | awk -F " : " '{print $NF}' )
+		LAPSUsername=$( echo "$dialogOutput" | grep "LAPS Username" | awk -F " : " '{print $NF}' )
+		}
+		
+####################################################################################################
+# GET NUMBER OF AUTOMATED DEVICE ENROLLMENTS
+
+getEnrollmentCount() {
+	deviceEnrollments=$(curl -X 'GET' \
+	"$url/api//v1/device-enrollments?page=0&page-size=100&sort=id%3Aasc" \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken")
+	enrollmentCount=$(/usr/bin/plutil -extract totalCount raw -o - - <<< "$deviceEnrollments")
+	echo "Enrollment Count: $enrollmentCount" 
+	enrollmentId=$(/usr/bin/plutil -extract "results".0."id" raw -o - - <<< "$deviceEnrollments")
+	echo "Enrollment ID: $enrollmentId" 
+	echo "$deviceEnrollments"
+}
+
+####################################################################################################
+# DISOWN DWVICE
+
+disownDevice() {
+	deviceDisowning=$(curl -X 'POST' \
+	"$url/api/v1/device-enrollments/$enrollmentId/disown" \
+	-H "accept: application/json" \
+	-H "Authorization: Bearer $bearerToken" \
+	-H "Content-Type: application/json" \
+	-d '{
+	"devices": [
+		"'$serialnumber'"
+	]
+}')
+	successCode=$(/usr/bin/plutil -extract devices.$serialnumber raw -o - - <<< "$deviceDisowning")
+}
+
+####################################################################################################
+# API TOOL VIA SWIFT DIALOG
+####################################################################################################
+# Launch a dialog window, request API Username, API Password, and URL of Jamf PRo Server
+
+launchScreen() {
+dialogOutput=$(/usr/local/bin/dialog --title "Jamf API Tool" --icon "$iconpath" --message "Welcome to the Jamf API Tool. Select the API call you want to use:" --moveable --medium --selecttitle "API Calls" --selectvalues "Disown Device,LAPS,Redeploy Framework,Return to Service" --button2text "Cancel" --textfield  "API Username" --textfield "API Password",secure --textfield "Server URL",required,value="https://yourserver.jamfcloud.com")
+	APIUSER=$( echo "$dialogOutput" | grep "API Username" | awk -F " : " '{print $NF}' )
+	APIPASS=$( echo "$dialogOutput" | grep "API Password" | awk -F " : " '{print $NF}' )
+url=$( echo "$dialogOutput" | grep "Server URL" | awk -F " : " '{print $NF}' )
+echo "$dialogOutput"
+option="$( echo "$dialogOutput" | grep "SelectedIndex" | awk -F " : " '{print $NF}' )"
+}
+
+launchScreen 
+
+# Exit the program if launched erroneously
+if [[  $option == "" ]]; then
+	echo "cancel clicked"
+	exit
+# User selected nothing from drop down, prompt again for credentials and drowpdown selection
+elif [[ $option == "-1" ]]; then
+	while [[ $option == "-1" ]]; do
+		dialogOutput=$(/usr/local/bin/dialog --title "Jamf API Tool" --icon "$iconpath" --message "No option selected. Please try again." --moveable --medium )
+		launchScreen 
+	done
+else
+# User put in credentials to use API tool, check to make sure they're valid
+	getBearerToken
+	#echo $response
+	case $response in
+		*token*) echo "token found, continuing"
+			;;
+		*) echo "no token generated"
+			exit 
+			;;
+	esac
+fi
+
+case $option in
+# Selected option is Disown Device
+	0)
+		echo "Disown Device"
+		dialogOutput=$(/usr/local/bin/dialog --title "Disown Device" --icon "$iconpath" --message "This will completely remove your device from Apple Business/School Manager. Use this tool after you have successfully wiped a device:" --moveable --medium --textfield "Serial Number",required)
+		serialnumber=$( echo "$dialogOutput" | grep "SerialNumber" | awk -F " : " '{print $NF}' )
+		checkTokenExpiration
+		getEnrollmentCount
+		if [[ $enrollmentCount != 1 ]]; then
+			echo "You have more than one Device Enrollment token configured, this tool does not support Disown for such environments"
+			dialogOutput=$(/usr/local/bin/dialog --title "Disown Device" --icon "$iconpath" --message "You have more than one Device Enrollment token configured, this tool does not support Disown for such environments." --moveable --medium)
+				else
+				disownDevice
+				dialogOutput=$(/usr/local/bin/dialog --title "Disown Device" --icon "$iconpath" --message "Disown command sent. Result received is $successCode" --moveable --medium)
+				fi
+	;;
+# Selected option is LAPS	
+	1)
+		echo "LAPS"
+		lapsDialog 
+			deviceid=$( echo "$dialogOutput" | grep "Computer ID" | awk -F " : " '{print $NF}' )
+			LAPSUsername=$( echo "$dialogOutput" | grep "LAPS Username" | awk -F " : " '{print $NF}' )
+			checkTokenExpiration
+			getComputerManagementId
+			getLAPSPassword
+			echo "$queryForPassword"
+			LAPSPassword=$(/usr/bin/plutil -extract "password" raw -o - - <<< "$queryForPassword")
+			# This loop allows for admin to re-enter device ID and password in case they incorrectly typed it. While it's not super clean, it does work.
+			case $LAPSPassword in
+				*stdin*) dialogOutput=$(/usr/local/bin/dialog --title "LAPS" --message "Password for $LAPSUsername on Computer with ID $deviceid was not found." --moveable --medium --button1text "Try Again" -2 "Exit")
+					lapsPasswordInvalid=true 
+					while [[ $lapsPasswordInvalid == true ]]; do
+						lapsDialog 
+						checkTokenExpiration
+						getComputerManagementId
+						getLAPSPassword
+						LAPSPassword=$(/usr/bin/plutil -extract "password" raw -o - - <<< "$queryForPassword")
+						case $LAPSPassword in
+							*stdin*) dialogOutput=$(/usr/local/bin/dialog --title "LAPS" --message "Password for $LAPSUsername on Computer with ID $deviceid was not found." --moveable --medium --button1text "Try Again" -2 "Exit")
+								;;
+								*) dialogOutput=$(/usr/local/bin/dialog --title "LAPS" --message "Password for $LAPSUsername on Computer with ID $deviceid is: $LAPSPassword" --moveable --medium -2 "Exit")
+									exit
+									;;
+									esac
+					done
+						;;
+				*) dialogOutput=$(/usr/local/bin/dialog --title "LAPS" --message "Password for $LAPSUsername on Computer with ID $deviceid is: $LAPSPassword" --moveable --medium)
+				;;
+			esac
+	;;
+# Selected option is Redeploy Framework	
+	2)
+		echo "Redeploy Framework"
+		dialogOutput=$(/usr/local/bin/dialog --title "Redeploy Framework" --icon "$iconpath" --message "Fill out the following information to redeploy the management framework to a device:" --moveable --medium --textfield "Computer ID",required )
+			deviceid=$( echo "$dialogOutput" | grep "Computer ID" | awk -F " : " '{print $NF}' )
+			checkTokenExpiration
+			redeployManagementFramework
+			dialogOutput=$(/usr/local/bin/dialog --title "Redeploy Framework" --icon "$iconpath" --message "Redeploy Management Framework command has been sent. Please check the device and confirm the issue is resolved." --moveable --medium )
+	;;
+	# Selected option Return to Service
+	3)
+		echo "Return to Service"
+		dialogOutput=$(/usr/local/bin/dialog --title "Return to Service" --icon "$return2serviceicon" --message "Fill out the following information to send a Return to Service command to a device:" --moveable --medium --textfield "Device ID",required --textfield "Wi-Fi .mobileconfig file,fileselect,required" )
+			echo "$dialogOutput"
+			deviceid=$( echo "$dialogOutput" | grep "Device ID" | awk -F " : " '{print $NF}' )
+			configProfilePath=$( echo "$dialogOutput" | grep "Wi-Fi .mobileconfig file" | awk -F " : " '{print $NF}' )
+			#Convert config profile to base64 as required
+			base64pathwifi=$(base64 < "$configProfilePath")
+			checkTokenExpiration
+			getManagementId
+			returnToService
+			dialogOutput=$(/usr/local/bin/dialog --title "Return to Service" --icon "$return2serviceicon" --message "Return to Service command has been sent. Please check the device and confirm the command was received" --moveable --medium --button1text "OK"  )
+	;;
+	
+	*)
+		echo "Invalid selection or cancel clicked after >1 launchScreen command"
+		exit
+	;;
+esac
+					

@@ -13,6 +13,18 @@
 # Only run under very specific circumstances
 
 ####################################################################################################
+# Set variables to match your environment
+
+url="https://yourserver.jamfcloud.com"
+username="username"
+password="password"
+filepath="$HOME/Desktop/summary.txt"
+
+touch $filepath
+
+echo -e "Jamf Pro Summary: Gathered by API\n==========================================================================================" > $filepath
+
+####################################################################################################
 # Array Configurations
 
 ####################################################################################################
@@ -43,14 +55,89 @@ bearerToken=""
 tokenExpirationEpoch="0"
 
 ####################################################################################################
-# Get Group ID List
+# Get Server URL and unsecured enrollment URL
+getServerURL() {
+	serverURLResponse=$(curl -X 'GET' \
+	--url "$url/api/v1/jamf-pro-server-url" 2>/dev/null \
+	-H "accept: application/json" \
+	-H "Authorization: Bearer $bearerToken")
+	serverURLInfo=$(/usr/bin/plutil -extract url raw -o - - <<< "$serverURLResponse")
+	unsecuredEnrollmentURLInfo=$(/usr/bin/plutil -extract unsecuredEnrollmentUrl raw -o - - <<< "$serverURLResponse")
+	echo -e "Jamf Pro Server Information:\n==========================================================================================\n-Server URL is: $serverURLInfo\n-Unsecured Enrollment URL is: $unsecuredEnrollmentURLInfo" >> $filepath
+}
 
-getGroupIds() {
-	listOfGroupIds=$(curl -X 'GET' \
-	"$url/JSSResource/computergroups" 2>/dev/null \
+####################################################################################################
+# Get Server Version
+getServerVersion() {
+	serverVersion=$(curl -X 'GET' \
+	"$url/api/v1/jamf-pro-version" 2>/dev/null \
+	-H "accept: application/json" \
+	-H "Authorization: Bearer $bearerToken")
+	versionResponse=$(/usr/bin/plutil -extract version raw -o - - <<< "$serverVersion")
+	echo -e "-Installed Version: $versionResponse" >> $filepath
+}
+
+####################################################################################################
+# Get Computer ID List
+
+getComputerIds() {
+	listOfComputerIds=$(curl -X 'GET' \
+	"$url/JSSResource/computers" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Content-type: text/xml" \
+	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '/computers/size/text()' -)
+	echo -e "-Total number of enrolled computers: $listOfComputerIds" >> $filepath
+}
+
+####################################################################################################
+# Get Mobile Device ID List
+# I think I put this in twice accidentally, testing further to be sure
+
+#getMobileDeviceIds() {
+#	listOfMobileDeviceIds=$(curl -X 'GET' \
+#	"$url/JSSResource/mobiledevices" 2>/dev/null \
+#	-H 'accept: application/xml' \
+#	-H "Content-type: text/xml" \
+#	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '/mobile_devices/size/text()' -)
+#	echo -e "-Total number of Mobile Devices: $listOfMobileDeviceIds" >> $filepath
+#}
+
+####################################################################################################
+# Get Computer ID List
+
+
+getMobileDeviceIds() {
+	listOfMobileDeviceIds=$(curl -X 'GET' \
+		"$url/JSSResource/mobiledevices" 2>/dev/null \
+		-H 'accept: application/xml' \
+		-H "Content-type: text/xml" \
+		-H "Authorization: Bearer $bearerToken"| xmllint --xpath '/mobile_devices/size/text()' -)
+	echo -e "-Total number of Mobile Devices: $listOfMobileDeviceIds" >> $filepath
+}
+
+####################################################################################################
+# Get List of Configuration Profile IDs
+listOSXConfigurationProfileIds() {
+	listOfConfigProfileIds=$(curl -X 'GET' \
+	"$url/JSSResource/osxconfigurationprofiles" 2>/dev/null \
 	-H 'accept: application/xml' \
 	-H "Content-type: text/xml" \
 	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
+
+}
+
+####################################################################################################
+# Get List of Configuration Profiles
+
+listOSXConfigurationProfiles() {
+	echo -e "\n==========================================================================================\nOSX Configuration Profiles:\n==========================================================================================" >> $filepath
+	for OSXConfigurationProfileID in $listOfConfigProfileIds; do
+	listOfMacConfigurationProfiles=$(curl -H "Authorization: Bearer $bearerToken" -H 'accept: application/xml' -H "Content-type: text/xml" -X 'GET' "$url/JSSResource/osxconfigurationprofiles/id/$OSXConfigurationProfileID" 2>/dev/null)
+	OSXMacProfileIDNumber=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/id/text()' -)
+	OSXMacProfileName=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/name/text()' -)
+	echo -e "\nProfile ID: $OSXMacProfileIDNumber\nProfile Name: $OSXMacProfileName\n----------------------------------------------------------------------------------" >> $filepath
+	checkTokenExpiration
+	done
 }
 
 ####################################################################################################
@@ -64,65 +151,91 @@ getPolicyIds() {
 }
 
 ####################################################################################################
+# Check all policy IDs for problematic configurations
+checkPolicyIds() {
+	echo -e "\n==========================================================================================\nComputer Policies:\n==========================================================================================\n" >> $filepath
+	for policyID in $listOfPolicyIds; do
+		policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/policies/id/$policyID" 2>/dev/null) 
+		policyStatus=$(echo "$policyDetails" | xmllint --xpath '/policy/general/enabled/text()' -)
+		triggerSet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/trigger/text()' -)
+		frequencySet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/frequency/text()' -)
+		inventoryUpdate=$(echo "$policyDetails" | xmllint --xpath '/policy/maintenance/recon/text()' -)
+		if [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate != "true" ]]; then
+			echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -) >> $filepath
+			echo "-This policy is set to recurring checkin, and ongoing frequency!" >> $filepath
+		elif [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate == "true" ]]; then
+			echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -) >> $filepath
+			echo "-This policy is set to recurring checkin, ongoing frequency, and updates inventory!!!" >> $filepath
+		else
+			:
+		fi
+		checkTokenExpiration
+		sleep 1
+	done
+}
+
 ####################################################################################################
+# Get Group ID List
+
+getComputerGroupIds() {
+	listOfGroupIds=$(curl -X 'GET' \
+	"$url/JSSResource/computergroups" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Content-type: text/xml" \
+	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
+
+}
+
+####################################################################################################
+# Check all Computer Groups for problematic configurations
+
+checkComputerGroupIds() {
+	echo -e "\n==========================================================================================\nComputer Groups:\n==========================================================================================\n" >> $filepath
+	for policyID in $listOfGroupIds; do
+		policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/computergroups/id/$policyID" 2>/dev/null)
+		nestedCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/criterion/name/text()' - 2>/dev/null)
+		criteriaSize=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/size/text()' -)
+		if [[ $nestedCheck == *"Computer Group"* ]]; then
+			echo -e "\nThis computer group is nested" >> $filepath
+			echo -e "--Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
+			smartGroupCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/is_smart/text()' -)
+			if [[ $smartGroupCheck == true ]]; then 
+				echo -e "--This is a smart group\n" >> $filepath
+			else
+				echo -e "--This is a static group\n" >> $filepath
+			fi
+		elif [[ $criteriaSize -ge 10 ]]; then
+			echo -e "\nThis computer group has 10 or more criteria" >> $filepath
+			echo -e "--Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -) >> $filepath
+		else
+			#remove comments so you can see status as the api tool runs, otherwise leave just the colon to prevent any extra messaging.
+			#		echo "This computer group does not contain nested groups or more than 10 criteria"
+			#		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
+			:
+		fi
+		checkTokenExpiration 
+		sleep 1
+	done
+}
+
 ####################################################################################################
 
-
-####################################################################################################
-# Set variables to match your environment
-
-url="https://yourserver.jamfcloud.com"
-username="username"
-password="password"
-
+# Get a token to run queries
 getBearerToken
 
-getGroupIds
+# Build out basic server information
+getServerURL
+getServerVersion 
+getComputerIds 
+getMobileDeviceIds
 
-for policyID in $listOfGroupIds; do
-	policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/computergroups/id/$policyID" 2>/dev/null)
-	nestedCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/criterion/name/text()' - 2>/dev/null)
-	criteriaSize=$(echo "$policyDetails" | xmllint --xpath '/computer_group/criteria/size/text()' -)
-	if [[ $nestedCheck == *"Computer Group"* ]]; then
-		echo -e "\nThis computer group is nested"
-		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
-		smartGroupCheck=$(echo "$policyDetails" | xmllint --xpath '/computer_group/is_smart/text()' -)
-		if [[ $smartGroupCheck == true ]]; then 
-			echo -e "-This is a smart group\n"
-		else
-			echo -e "-This is a static group\n"
-		fi
-	elif [[ $criteriaSize -ge 10 ]]; then
-		echo -e "\nThis computer group has 10 or more criteria"
-		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
-	else
-		#remove comments so you can see status as the api tool runs, otherwise leave just the colon to prevent any extra messaging.
-		#		echo "This computer group does not contain nested groups or more than 10 criteria"
-		#		echo -e "-Computer Group Name:" $(echo "$policyDetails" | xmllint --xpath '/computer_group/name/text()' -)
-		:
-	fi
-	checkTokenExpiration 
-	sleep 1
-done
-
+# Check for problematic policies
 getPolicyIds
+checkPolicyIds
 
-for policyID in $listOfPolicyIds; do
-	policyDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X GET "$url/JSSResource/policies/id/$policyID" 2>/dev/null) 
-	policyStatus=$(echo "$policyDetails" | xmllint --xpath '/policy/general/enabled/text()' -)
-	triggerSet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/trigger/text()' -)
-	frequencySet=$(echo "$policyDetails" | xmllint --xpath '/policy/general/frequency/text()' -)
-	inventoryUpdate=$(echo "$policyDetails" | xmllint --xpath '/policy/maintenance/recon/text()' -)
-	if [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate != "true" ]]; then
-		echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -)
-		echo "-This policy is set to recurring checkin, and ongoing frequency!"
-	elif [[ $policyStatus == "true" ]] && [[ $triggerSet == "CHECKIN" ]] && [[ $frequencySet == "Ongoing" ]] && [[ $inventoryUpdate == "true" ]]; then
-		echo -e "\nPolicy Name:" $(echo "$policyDetails" | xmllint --xpath '/policy/general/name/text()' -)
-		echo "-This policy is set to recurring checkin, ongoing frequency, and updates inventory!!!"
-	else
-		:
-	fi
-	checkTokenExpiration
-	sleep 1
-done
+# Check for problematic configuration profiles
+getComputerGroupIds
+checkComputerGroupIds
 
+listOSXConfigurationProfileIds
+listOSXConfigurationProfiles

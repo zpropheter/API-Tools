@@ -1,6 +1,7 @@
 #!/bin/bash
 
-#PI112821
+# IF YOU'RE USING THIS, YOU HAVE A CASE OPEN THAT IS TIED TO PI112821
+
 ####################################################################################################
 # This tool should be used SPARINGLY and only in circumstances where you can't generate a summary in your jamf pro server by doing the following:
 # 1. Log in to Jamf Pro
@@ -18,8 +19,12 @@
 
 url="https://yourserver.jamfcloud.com"
 username="username"
-password="password"
+password="pasword"
 filepath="$HOME/Desktop/summary.txt"
+tempfilepath=/var/tmp/temp.plist
+
+rm -rf $tempfilepath
+rm -rf $filepath
 
 touch $filepath
 
@@ -124,7 +129,6 @@ listOSXConfigurationProfileIds() {
 	-H 'accept: application/xml' \
 	-H "Content-type: text/xml" \
 	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
-
 }
 
 ####################################################################################################
@@ -133,11 +137,15 @@ listOSXConfigurationProfileIds() {
 listOSXConfigurationProfiles() {
 	echo -e "\n==========================================================================================\nOSX Configuration Profiles:\n==========================================================================================" >> $filepath
 	for OSXConfigurationProfileID in $listOfConfigProfileIds; do
-	listOfMacConfigurationProfiles=$(curl -H "Authorization: Bearer $bearerToken" -H 'accept: application/xml' -H "Content-type: text/xml" -X 'GET' "$url/JSSResource/osxconfigurationprofiles/id/$OSXConfigurationProfileID" 2>/dev/null)
-	OSXMacProfileIDNumber=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/id/text()' -)
-	OSXMacProfileName=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/name/text()' -)
-	echo -e "\nProfile ID: $OSXMacProfileIDNumber\nProfile Name: $OSXMacProfileName\n----------------------------------------------------------------------------------" >> $filepath
-	checkTokenExpiration
+		listOfMacConfigurationProfiles=$(curl -H "Authorization: Bearer $bearerToken" -H 'accept: application/xml' -H "Content-type: text/xml" -X 'GET' "$url/JSSResource/osxconfigurationprofiles/id/$OSXConfigurationProfileID" 2>/dev/null)
+		echo "$listOfMacConfigurationProfiles" >> $tempfilepath
+		OSXMacProfileIDNumber=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/id/text()' -)
+		OSXMacProfileName=$(echo "$listOfMacConfigurationProfiles" | xmllint --xpath '/os_x_configuration_profile/general/name/text()' -)
+		#grep -E -o  '[A-Za-z]+\sPayload' $tempfilepath 2>/dev/null
+		echo -e "\nProfile ID: $OSXMacProfileIDNumber\nProfile Name: $OSXMacProfileName" >> $filepath
+		tellMePayload=$(grep -E -o  '[A-Za-z]+\sPayload' $tempfilepath 2>/dev/null)
+		echo "Payload Type: $tellMePayload" >> $filepath
+		echo -e "\n----------------------------------------------------------------------------------" >> $filepath
 	done
 }
 
@@ -220,6 +228,32 @@ checkComputerGroupIds() {
 }
 
 ####################################################################################################
+# Get EA ID List
+
+getEAIds() {
+	listOfEAIds=$(curl -X 'GET' \
+	"$url/JSSResource/computerextensionattributes" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Content-type: text/xml" \
+	-H "Authorization: Bearer $bearerToken"| xmllint --xpath '//id/text()' -)
+}
+
+####################################################################################################
+# Print EA Info to List
+
+EAPull() {
+	echo -e "\n==========================================================================================\nExtension Attributes:\n==========================================================================================\n" >> $filepath
+	for EAId in $listOfEAIds; do
+		getXMLResponse=$(curl -H "Authorization: Bearer $bearerToken" --header 'accept: application/json' -X 'GET' "$url/JSSResource/computerextensionattributes/id/$EAId"   2>/dev/null > $tempfilepath)
+		plutil -convert xml1 $tempfilepath
+		cat $tempfilepath >> $filepath
+		echo -e "\n----------------------------------------------------------------------------------" >> $filepath
+	done
+	rm -rf $tempfilepath
+	checkTokenExpiration 
+}
+
+####################################################################################################
 
 # Get a token to run queries
 getBearerToken
@@ -234,9 +268,14 @@ getMobileDeviceIds
 getPolicyIds
 checkPolicyIds
 
-# Check for problematic configuration profiles
+# Check for problematic computer groups
 getComputerGroupIds
 checkComputerGroupIds
 
+# List all configuration profiles
 listOSXConfigurationProfileIds
 listOSXConfigurationProfiles
+
+# List all Extension Attributes
+getEAIds 
+EAPull 

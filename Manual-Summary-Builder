@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# IF YOU'RE USING THIS, YOU HAVE A CASE OPEN THAT IS TIED TO PI112821
+# IF YOU'RE USING THIS, YOU SHOULD HAVE A CASE OPEN THAT IS TIED TO PI112821
 
 ####################################################################################################
 # This tool should be used SPARINGLY and only in circumstances where you can't generate a summary in your jamf pro server by doing the following:

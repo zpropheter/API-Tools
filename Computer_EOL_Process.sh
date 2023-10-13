@@ -163,12 +163,12 @@ unManageOnly() {
 		unmanageResult2=$(echo "$unmanageResult" | grep "UnmanageDevice")
 		if [[ $unmanageResult2 == "UnmanageDevice" ]]; then
 			echo "Successfully removed management from  computer ID: $computerID"
-			sleep 1
 			checkTokenExpiration 
+   			sleep 1
 		else
 			echo "Unable to remove management from computer ID: $computerID"
-			sleep 1
 			checkTokenExpiration 
+   			sleep 1
 		fi
 	done
 }

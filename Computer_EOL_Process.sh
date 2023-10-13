@@ -148,6 +148,7 @@ disownArray() {
 	for computerID in $computerIDsInGroup; do
 		echo "Disowning computer ID: $computerID"
 		disownDevice 
+  		sleep 1
 	done
 }
 

@@ -1,8 +1,6 @@
 #!/bin/bash
 
 ####################################################################################################
-#Jamf Log Grabber is designed to collect any logs associated with Jamf Products as well as MDM Managed Preferences. It features start and finish notifications for end users to be notified if desired
-#Jamf Products currently supported: Jamf Binary (including Recon Troubleshooting), Jamf Connect, Jamf Security (Protect and Trust) 
 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:

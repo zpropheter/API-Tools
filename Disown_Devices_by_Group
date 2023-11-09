@@ -1,0 +1,180 @@
+#!/bin/bash
+####################################################################################################
+# Your custom variables
+url="https://yourserver.jamfcloud.com"
+username="username"
+password="password"
+deviceGroupID="smart mobile device group"
+output=$HOME/Desktop/output.txt
+
+####################################################################################################
+# User Prompts
+#Download the .mobileconfig file for the wi-fi you want and enter the file path or drag and drop it when prompted
+
+userPrompts() { 
+	echo -e "\n Please enter the file path of the Wi-Fi Configuration Profile you would like to use:"
+	read -p 'configProfilePath: ' configProfilePath
+	
+	# define it
+	base64pathwifi=$(base64 < "$configProfilePath")
+}
+
+####################################################################################################
+# Get bearer token for authentication
+getBearerToken() {
+	response=$(curl -s -u "$username":"$password" "$url"/api/v1/auth/token -X POST 2>/dev/null)
+	bearerToken=$(echo "$response" | plutil -extract token raw -)
+	tokenExpiration=$(echo "$response" | plutil -extract expires raw - | awk -F . '{print $1}')
+	tokenExpirationEpoch=$(date -j -f "%Y-%m-%dT%T" "$tokenExpiration" +"%s")
+}
+
+####################################################################################################
+#API BEARER TOKEN Expiration check
+
+checkTokenExpiration() {
+	nowEpochUTC=$(date -j -f "%Y-%m-%dT%T" "$(date -u +"%Y-%m-%dT%T")" +"%s")
+	if [[ tokenExpirationEpoch -gt nowEpochUTC ]]
+	then
+		:
+	else
+		(echo "No valid token available, getting new token")
+		getBearerToken
+	fi
+}
+
+#Variable declarations
+bearerToken=""
+tokenExpirationEpoch="0"
+
+####################################################################################################
+# Get Enrollment Count to make sure disown works
+getEnrollmentCount() {
+	deviceEnrollments=$(curl -X 'GET' \
+	"$url/api//v1/device-enrollments?page=0&page-size=100&sort=id%3Aasc" 2>/dev/null \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken")
+	#echo "$deviceEnrollments"
+	enrollmentCount=$(/usr/bin/plutil -extract totalCount raw -o - - <<< "$deviceEnrollments")
+	#echo "Total Enrollments: $enrollmentCount" 
+	enrollmentId=$(/usr/bin/plutil -extract "results".0."id" raw -o - - <<< "$deviceEnrollments")
+	#echo "Enrollment ID: $enrollmentId" 
+	if [[ $enrollmentCount == 1 ]]; then
+		continueReset=0
+	else
+		continueReset=1
+	fi
+}
+
+####################################################################################################
+# Disown the device using serialnumber
+disownDevice() {
+	deviceDisowning=$(curl -X 'POST' \
+	"$url/api/v1/device-enrollments/$enrollmentId/disown" 2>/dev/null \
+	-H "accept: application/json" \
+	-H "Authorization: Bearer $bearerToken" \
+	-H "Content-Type: application/json" \
+	-d '{
+	"devices": [
+		"'$serialnumber'"
+	]
+}')
+	#echo "$deviceDisowning"
+	successCode=$(/usr/bin/plutil -extract devices.$serialnumber raw -o - - <<< "$deviceDisowning")
+	disownResult=$(echo "$successCode" | grep "NOT_ACCESSIBLE")
+	echo "Result of disown command for $computerID is $successCode"
+}
+
+####################################################################################################
+# Pull the serial number and device ID from the smart group
+
+unmanageComputerGroup() {
+	computerGroupCheck=$(curl -X 'GET' \
+	"$url/JSSResource/computergroups/id/$computerGroupIDNumber" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Authorization: Bearer $bearerToken")
+	computerIDsInGroup=$(echo "$computerGroupCheck" | xmllint --xpath '/computer_group/computers/computer/id/text()' -)
+	serialnumber=$(echo "$computerGroupCheck" | xmllint --xpath '/computer_group/computers/computer/serial_number/text()' -)
+	echo "Computer IDs found in Smart Group ID: $computerGroupIDNumber are: $computerIDsInGroup"
+	#echo "$serialnumber"
+}
+
+
+
+runThroughDeviceGroup() {
+	deviceGroupCheck=$(curl -X 'GET' \
+	"$url/JSSResource/mobiledevicegroups/id/$deviceGroupID" 2>/dev/null \
+	-H 'accept: application/xml' \
+	-H "Authorization: Bearer $bearerToken")
+	deviceIDsInGroup=$(echo "$deviceGroupCheck" | xmllint --xpath '/mobile_device_group/mobile_devices/mobile_device/id/text()' -)
+	serialnumber=$(echo "$deviceGroupCheck" | xmllint --xpath '/mobile_device_group/mobile_devices/mobile_device/serial_number/text()' -)
+	echo "Device IDs found in Smart Group ID: $deviceGroupID are: $deviceIDsInGroup"
+	echo "$serialnumber"
+}
+
+####################################################################################################
+
+getManagementId() {
+	mobiledevicerecord=$(curl -X 'GET' \
+	"$url/api/v2/mobile-devices/$deviceID" \
+	-H 'accept: application/json' \
+	-H "Authorization: Bearer $bearerToken")
+	managementId=$(/usr/bin/plutil -extract "managementId" raw -o - - <<< "$mobiledevicerecord")
+	echo "Management ID: $managementId"
+}
+
+####################################################################################################
+
+disownDevice() {
+	curl --request POST \
+	--url "$url"/api/preview/mdm/commands \
+	--header "Authorization: Bearer $bearerToken" \
+	--header 'accept: application/json' \
+	--header 'content-type: application/json' \
+	--data '
+{
+	"clientData": [
+		{
+			"managementId": "'$managementId'"
+		}
+	],
+	"commandData": {
+		"commandType": "ERASE_DEVICE",
+		"returnToService": {
+			"enabled": true,
+			"wifiProfileData": "'$base64pathwifi'"
+		}
+	}
+}
+'
+}
+
+####################################################################################################
+# Just UnManage the device
+
+disownGroup() {
+	for deviceID in $deviceIDsInGroup; do
+		echo "Sending return to service command for: $deviceID"
+		getManagementId 
+		disownDevice 
+#		computerDetails=$(curl -H "Authorization: Bearer $bearerToken" -H "Accept: application/xml" -H "Content-type: text/xml" -X POST "$url/JSSResource/computercommands/command/UnmanageDevice/id/$computerID" 2>/dev/null) 
+#		unmanageResult=$(echo "$computerDetails" | xmllint --xpath '/computer_command/command/name/text()' -)
+#		unmanageResult2=$(echo "$unmanageResult" | grep "UnmanageDevice")
+#		if [[ $unmanageResult2 == "UnmanageDevice" ]]; then
+#			echo "Successfully removed management from  computer ID: $computerID"
+#			sleep 1
+#			checkTokenExpiration 
+#		else
+#			echo "Unable to remove management from computer ID: $computerID"
+#			sleep 1
+#			checkTokenExpiration 
+#		fi
+	done
+}
+
+
+
+
+userPrompts 
+getBearerToken
+runThroughDeviceGroup 
+disownGroup 

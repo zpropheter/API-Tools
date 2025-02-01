@@ -1,6 +1,7 @@
 #!/bin/bash
 
-#A tool to help admins quickly see the deployed update for individual devices
+#A tool to help admins quickly see the latest update status for all devices in their fleet.
+#As always, test in test servers, not in prod.
 #File path for exported CSV
 finalCSVOutput="/$HOME/Downloads/new.csv"
 

@@ -67,7 +67,7 @@ mkdir /tmp/Update_Reporting/
 #Get Bearer Token
 getBearerToken 
 #############################################################################
-pageSize="1"
+pageSize="100"
 page="0"
 #Pull all devices plans from newest to oldest
 initialUpdatePlanCheck=$(curl -X 'GET' \

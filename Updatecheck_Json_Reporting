@@ -1,7 +1,6 @@
 #!/bin/bash
 
-#A tool to help admins quickly see the deployed update for individual devices
-#File path for exported CSV
+#A tool to help admins quickly see the update statuses fleet wide
 jsonFilePathTemp="$HOME/Downloads/AllUpdates.json"
 jsonFilePath="$HOME/Downloads/AllUpdatesFinal.json"
 jsonScratchpad="$HOME/Downloads/scratchpad.json"
